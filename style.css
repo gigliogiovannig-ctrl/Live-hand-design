@@ -204,7 +204,40 @@ code {
   border-radius: 4px;
 }
 
+/* --- Telefono: inquadratura verticale e comandi grandi abbastanza da toccare --- */
 @media (max-width: 620px) {
-  .controls { gap: 10px; }
-  input[type="range"] { width: 100px; }
+  .topbar { padding: 10px 14px 4px; }
+  .topbar h1 { font-size: 18px; }
+  .hint { font-size: 12.5px; }
+  .stage { padding: 8px 10px; }
+
+  /* In portrait la camera del telefono dà un frame verticale: con 4/3 verrebbe
+     ritagliato quasi tutto, quindi il riquadro segue l'orientamento. */
+  .viewport { aspect-ratio: 3 / 4; }
+
+  .controls { gap: 8px; padding: 4px 10px 14px; }
+  .group { padding: 6px 10px; gap: 6px; }
+  button { padding: 10px 12px; min-height: 44px; }
+  .swatch { width: 34px; height: 34px; min-height: 0; }
+  input[type="range"] { width: 110px; height: 28px; }
+  .group label { font-size: 12px; }
+  kbd { display: none; }
+  .footnote { font-size: 11.5px; margin-bottom: 18px; }
 }
+
+@media (max-width: 620px) and (orientation: landscape) {
+  .viewport { aspect-ratio: 16 / 9; }
+}
+
+/* A schermo intero il video prende tutto lo spazio disponibile. */
+body:fullscreen .topbar,
+body:fullscreen .footnote { display: none; }
+
+body:fullscreen .viewport {
+  aspect-ratio: auto;
+  height: calc(100vh - 130px);
+  width: 100%;
+}
+
+/* Evita lo zoom accidentale con due dita mentre si usano i comandi. */
+button, .swatch, input { touch-action: manipulation; }

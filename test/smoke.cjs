@@ -189,9 +189,40 @@ const server = http.createServer((req, res) => {
   const download = await dl;
   check('salva PNG', !!download, download ? download.suggestedFilename() : 'nessun download');
 
+  // Cambio fotocamera: con la webcam finta lo stream è lo stesso, ma il giro deve reggere.
+  await page.click('#flipBtn');
+  await page.waitForFunction(
+    () => !document.getElementById('flipBtn').disabled, null, { timeout: 10000 }
+  ).catch(() => {});
+  const flipped = await page.evaluate(() => ({
+    facing: window.__handDesign.state.facingMode,
+    mirror: window.__handDesign.state.mirror,
+    playing: !document.getElementById('video').paused,
+  }));
+  check('cambio fotocamera', flipped.facing === 'environment' && flipped.playing,
+    `facing=${flipped.facing}, mirror=${flipped.mirror}`);
+
   await page.click('#stopBtn');
   const stopped = await page.evaluate(() => document.getElementById('video').srcObject === null);
   check('stop libera la camera', stopped);
+
+  // --- Layout su telefono (portrait) ---
+  const phone = await ctx.newPage();
+  await phone.setViewportSize({ width: 390, height: 844 });
+  await phone.goto(`http://localhost:${PORT}/`, { waitUntil: 'load' });
+  const layout = await phone.evaluate(() => {
+    const vp = document.getElementById('viewport').getBoundingClientRect();
+    const btn = document.getElementById('startBtn').getBoundingClientRect();
+    return {
+      ratio: vp.width / vp.height,
+      fitsWidth: vp.width <= window.innerWidth,
+      touchTarget: btn.height,
+      noHScroll: document.documentElement.scrollWidth <= window.innerWidth + 1,
+    };
+  });
+  check('portrait: riquadro verticale 3/4', Math.abs(layout.ratio - 0.75) < 0.02, `ratio=${layout.ratio.toFixed(2)}`);
+  check('portrait: nessuno scroll orizzontale', layout.noHScroll && layout.fitsWidth);
+  check('portrait: pulsanti toccabili (>=44px)', layout.touchTarget >= 44, `${Math.round(layout.touchTarget)}px`);
 
   check('nessun errore in console', errors.length === 0, errors.join(' | '));
 

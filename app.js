@@ -42,6 +42,8 @@ const overlayCtx = overlayCanvas.getContext("2d");
 
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
+const flipBtn = document.getElementById("flipBtn");
+const fsBtn = document.getElementById("fsBtn");
 const undoBtn = document.getElementById("undoBtn");
 const clearBtn = document.getElementById("clearBtn");
 const saveBtn = document.getElementById("saveBtn");
@@ -68,6 +70,7 @@ const state = {
   width: 6,
   tool: "pen",
   mirror: true,
+  facingMode: "user", // fotocamera frontale: la più naturale per disegnare guardandosi
   pinchOnRatio: 0.35,  // soglia di chiusura (regolabile dallo slider)
   strokes: [],         // tratti completati + in corso, in coordinate normalizzate 0..1
   hands: new Map(),    // stato per mano: { pinching, stroke, smooth }
@@ -393,25 +396,34 @@ async function ensureLandmarker() {
   return state.landmarker;
 }
 
+async function openStream() {
+  if (state.stream) state.stream.getTracks().forEach((t) => t.stop());
+  state.stream = await navigator.mediaDevices.getUserMedia({
+    video: {
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+      facingMode: { ideal: state.facingMode },
+    },
+    audio: false,
+  });
+  video.srcObject = state.stream;
+  await video.play();
+  if (!video.videoWidth) {
+    await new Promise((resolve) => { video.onloadedmetadata = () => resolve(); });
+  }
+}
+
 async function start() {
   startBtn.disabled = true;
   try {
     await ensureLandmarker();
     setStatus("Chiedo l'accesso alla webcam…");
-    state.stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
-      audio: false,
-    });
-    video.srcObject = state.stream;
-    await video.play();
-    await new Promise((resolve) => {
-      if (video.videoWidth) return resolve();
-      video.onloadedmetadata = () => resolve();
-    });
+    await openStream();
 
     resizeCanvases();
     state.running = true;
     stopBtn.disabled = false;
+    flipBtn.disabled = false;
     setStatus("Pronto — pizzica per disegnare", "ready");
     requestAnimationFrame(loop);
   } catch (err) {
@@ -438,13 +450,52 @@ function stop() {
   state.hands.clear();
   startBtn.disabled = false;
   stopBtn.disabled = true;
+  flipBtn.disabled = true;
   setStatus("Camera ferma");
+}
+
+/** Passa da fotocamera frontale a posteriore (e viceversa) senza ricaricare il modello. */
+async function flipCamera() {
+  if (!state.stream) return;
+  flipBtn.disabled = true;
+  const previous = state.facingMode;
+  state.facingMode = previous === "user" ? "environment" : "user";
+  try {
+    await openStream();
+    // Con la fotocamera posteriore l'immagine non va specchiata.
+    state.mirror = state.facingMode === "user";
+    mirrorCheck.checked = state.mirror;
+    video.classList.toggle("mirrored", state.mirror);
+    state.lastVideoTime = -1;
+    resizeCanvases();
+    setStatus(state.facingMode === "user" ? "Fotocamera frontale" : "Fotocamera posteriore", "ready");
+  } catch (err) {
+    console.error(err);
+    state.facingMode = previous;
+    try { await openStream(); } catch (_) { /* la camera è già stata persa */ }
+    setStatus("Cambio fotocamera non riuscito", "error");
+  }
+  flipBtn.disabled = false;
+}
+
+function toggleFullscreen() {
+  if (document.fullscreenElement) {
+    document.exitFullscreen();
+  } else if (document.body.requestFullscreen) {
+    document.body.requestFullscreen().catch((err) => console.warn("Schermo intero non disponibile:", err));
+  }
 }
 
 // --- Interfaccia ------------------------------------------------------------
 
 startBtn.addEventListener("click", start);
 stopBtn.addEventListener("click", stop);
+flipBtn.addEventListener("click", flipCamera);
+fsBtn.addEventListener("click", toggleFullscreen);
+document.addEventListener("fullscreenchange", () => {
+  // Il riquadro cambia dimensione: ricalcola i canvas.
+  requestAnimationFrame(resizeCanvases);
+});
 
 palette.addEventListener("click", (e) => {
   const btn = e.target.closest(".swatch");
