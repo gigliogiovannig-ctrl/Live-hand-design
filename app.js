@@ -72,9 +72,19 @@ const state = {
   mirror: true,
   facingMode: "user", // fotocamera frontale: la più naturale per disegnare guardandosi
   pinchOnRatio: 0.35,  // soglia di chiusura (regolabile dallo slider)
+  releaseMs: 130,      // quanto si aspetta prima di credere a un rilascio
+  graceMs: 260,        // quanto si tiene vivo il tratto se la mano sparisce
   strokes: [],         // tratti completati + in corso, in coordinate normalizzate 0..1
-  hands: new Map(),    // stato per mano: { pinching, stroke, smooth }
+  hands: new Map(),    // stato per mano
 };
+
+// Smoothing adattivo: alpha = SMOOTH_MIN + velocità (larghezze di canvas al
+// secondo) * SMOOTH_GAIN, con tetto a 1 (nessun filtro, nessun ritardo).
+const SMOOTH_MIN = 0.35;
+const SMOOTH_GAIN = 0.5;
+
+// Salto massimo (in frazione di canvas) che si accetta di collegare con una linea.
+const MAX_BRIDGE = 0.28;
 
 // --- Utility ----------------------------------------------------------------
 
@@ -182,6 +192,49 @@ function renderStrokes() {
   }
 }
 
+/**
+ * Disegna solo l'ultimo pezzo del tratto invece di ricomporre tutta la tela.
+ * Ridisegnare ogni punto di ogni tratto a ogni frame costa sempre di più man mano
+ * che il disegno cresce, e il rallentamento si sente proprio quando la mano corre.
+ */
+function drawStrokeTail(stroke) {
+  const pts = stroke.points;
+  const s = canvasScale();
+  drawCtx.lineCap = "round";
+  drawCtx.lineJoin = "round";
+  drawCtx.strokeStyle = stroke.color;
+  drawCtx.lineWidth = stroke.width * s;
+
+  const n = pts.length;
+  const P = (i) => fromNormalized(pts[i]);
+
+  if (n === 1) {
+    const p = P(0);
+    drawCtx.fillStyle = stroke.color;
+    drawCtx.beginPath();
+    drawCtx.arc(p.x, p.y, (stroke.width * s) / 2, 0, Math.PI * 2);
+    drawCtx.fill();
+    return;
+  }
+
+  drawCtx.beginPath();
+  if (n === 2) {
+    const a = P(0), b = P(1);
+    drawCtx.moveTo(a.x, a.y);
+    drawCtx.lineTo(b.x, b.y);
+  } else {
+    // Stessa curva quadratica del rendering completo: dal punto medio del
+    // segmento precedente, con vertice sul penultimo punto.
+    const a = P(n - 3), b = P(n - 2), c = P(n - 1);
+    drawCtx.moveTo((a.x + b.x) / 2, (a.y + b.y) / 2);
+    drawCtx.quadraticCurveTo(b.x, b.y, (b.x + c.x) / 2, (b.y + c.y) / 2);
+    // Coda provvisoria fino all'ultimo punto: la punta segue la mano senza
+    // ritardo di un campione, e il punto successivo la ridisegna sopra.
+    drawCtx.lineTo(c.x, c.y);
+  }
+  drawCtx.stroke();
+}
+
 function eraseAt(normPoint) {
   // Raggio in coordinate normalizzate, con un minimo per restare "afferrabile".
   const radiusPx = Math.max(state.width * 1.6, 18) * canvasScale();
@@ -264,58 +317,108 @@ function handKey(results, i) {
   return cat ? cat.categoryName : "hand" + i;
 }
 
-function processHand(key, landmarks) {
+function processHand(key, landmarks, now = performance.now()) {
   let hand = state.hands.get(key);
   if (!hand) {
-    hand = { pinching: false, stroke: null, smooth: null };
+    hand = { pinching: false, stroke: null, smooth: null, pendingRelease: null, suspendMark: 0,
+             lastSeen: now, lastTs: now };
     state.hands.set(key, hand);
   }
+  hand.lastSeen = now;
 
   const ratio = pinchRatio(landmarks);
   const onThreshold = state.pinchOnRatio;
   const offThreshold = state.pinchOnRatio * 1.45; // isteresi: evita lo sfarfallio
 
   const wasPinching = hand.pinching;
-  hand.pinching = wasPinching ? ratio < offThreshold : ratio < onThreshold;
+  const rawPinch = wasPinching ? ratio < offThreshold : ratio < onThreshold;
+
+  // Quando la mano corre, la sfocatura da movimento sballa i landmark e il
+  // pizzico può sembrare aperto per un frame o due. Invece di alzare subito la
+  // penna, si continua a disegnare e si aspetta conferma: se le dita si
+  // richiudono in fretta il tratto prosegue intero, se il rilascio è vero i
+  // punti aggiunti nel frattempo vengono tolti (niente codina finale).
+  let pinching = rawPinch;
+  if (wasPinching && !rawPinch) {
+    if (hand.pendingRelease === null) {
+      hand.pendingRelease = now;
+      hand.suspendMark = hand.stroke ? hand.stroke.points.length : 0;
+    }
+    if (now - hand.pendingRelease < state.releaseMs) {
+      pinching = true;
+    } else if (hand.stroke && hand.stroke.points.length > hand.suspendMark) {
+      hand.stroke.points.length = Math.max(hand.suspendMark, 1);
+      renderStrokes();
+    }
+  } else if (rawPinch) {
+    hand.pendingRelease = null;
+  }
+  hand.pinching = pinching;
 
   // Punto di disegno: a metà fra le punte di pollice e indice.
   const thumb = landmarkToCanvas(landmarks[THUMB_TIP]);
   const index = landmarkToCanvas(landmarks[INDEX_TIP]);
   const raw = { x: (thumb.x + index.x) / 2, y: (thumb.y + index.y) / 2 };
 
-  // Smoothing esponenziale: toglie il tremolio del tracking.
-  const alpha = 0.45;
-  if (!hand.smooth || (!wasPinching && hand.pinching)) {
+  const dt = Math.min(Math.max((now - hand.lastTs) / 1000, 1 / 120), 0.25);
+  hand.lastTs = now;
+
+  if (!hand.smooth || (!wasPinching && pinching)) {
     hand.smooth = { ...raw };
   } else {
+    // Smoothing adattivo alla velocità: da fermo filtra il tremolio del
+    // tracking, in corsa lascia passare il movimento quasi intatto. Con un
+    // fattore fisso la punta resterebbe indietro proprio nei tratti veloci.
+    const speed = Math.hypot(raw.x - hand.smooth.x, raw.y - hand.smooth.y) / drawingCanvas.width / dt;
+    const alpha = Math.min(SMOOTH_MIN + speed * SMOOTH_GAIN, 1);
     hand.smooth = {
       x: hand.smooth.x + (raw.x - hand.smooth.x) * alpha,
       y: hand.smooth.y + (raw.y - hand.smooth.y) * alpha,
     };
   }
 
+  if (!pinching) {
+    hand.stroke = null;
+    return;
+  }
+
   const norm = toNormalized(hand.smooth);
 
-  if (hand.pinching) {
-    if (state.tool === "eraser") {
-      eraseAt(norm);
-      return;
-    }
-    if (!wasPinching || !hand.stroke) {
-      hand.stroke = { color: state.color, width: state.width, points: [norm] };
-      state.strokes.push(hand.stroke);
-      renderStrokes();
-    } else {
-      const prev = hand.stroke.points[hand.stroke.points.length - 1];
-      const minStep = 1.5 / drawingCanvas.width; // scarta i micro-movimenti
-      if (Math.hypot(norm.x - prev.x, norm.y - prev.y) > minStep) {
-        hand.stroke.points.push(norm);
-        renderStrokes();
-      }
-    }
-  } else {
-    hand.stroke = null;
+  if (state.tool === "eraser") {
+    eraseAt(norm);
+    return;
   }
+
+  // Dopo una perdita di tracking la mano può ricomparire lontana: meglio un
+  // tratto nuovo che una riga dritta attraverso il disegno.
+  const prev = hand.stroke && hand.stroke.points[hand.stroke.points.length - 1];
+  const jumped = prev && Math.hypot(norm.x - prev.x, norm.y - prev.y) > MAX_BRIDGE;
+
+  if (!hand.stroke || jumped) {
+    hand.stroke = { color: state.color, width: state.width, points: [norm] };
+    state.strokes.push(hand.stroke);
+    drawStrokeTail(hand.stroke);
+    return;
+  }
+
+  const minStep = 1.5 / drawingCanvas.width; // scarta i micro-movimenti
+  if (Math.hypot(norm.x - prev.x, norm.y - prev.y) > minStep) {
+    hand.stroke.points.push(norm);
+    drawStrokeTail(hand.stroke);
+  }
+}
+
+/**
+ * Mano non rilevata in questo frame: la si tiene "viva" per un attimo. Un buco
+ * di uno o due frame è normale quando il movimento è rapido, e chiudere subito
+ * il tratto è ciò che spezzava le linee veloci.
+ */
+function expireLostHand(hand, now) {
+  if (now - hand.lastSeen < state.graceMs) return;
+  hand.pinching = false;
+  hand.stroke = null;
+  hand.smooth = null;
+  hand.pendingRelease = null;
 }
 
 // --- Loop -------------------------------------------------------------------
@@ -341,15 +444,11 @@ function loop() {
       results.landmarks.forEach((landmarks, i) => {
         const key = handKey(results, i);
         seen.add(key);
-        processHand(key, landmarks);
+        processHand(key, landmarks, ts);
       });
-      // Mano uscita dal campo visivo: chiudi il suo tratto.
+      // Mano uscita dal campo visivo: il tratto resta aperto per il tempo di grazia.
       for (const [key, hand] of state.hands) {
-        if (!seen.has(key)) {
-          hand.pinching = false;
-          hand.stroke = null;
-          hand.smooth = null;
-        }
+        if (!seen.has(key)) expireLostHand(hand, ts);
       }
       const anyPinch = [...state.hands.values()].some((h) => h.pinching);
       setStatus(
@@ -359,12 +458,9 @@ function loop() {
         anyPinch ? "drawing" : "ready"
       );
     } else {
-      for (const hand of state.hands.values()) {
-        hand.pinching = false;
-        hand.stroke = null;
-        hand.smooth = null;
-      }
-      setStatus("Nessuna mano inquadrata", "ready");
+      for (const hand of state.hands.values()) expireLostHand(hand, ts);
+      const holding = [...state.hands.values()].some((h) => h.pinching);
+      if (!holding) setStatus("Nessuna mano inquadrata", "ready");
     }
 
     drawOverlay(results);
@@ -384,8 +480,10 @@ async function ensureLandmarker() {
     runningMode: "VIDEO",
     numHands: 2,
     minHandDetectionConfidence: 0.5,
-    minHandPresenceConfidence: 0.5,
-    minTrackingConfidence: 0.5,
+    // Soglie di presenza e inseguimento basse: con la mano in movimento
+    // l'immagine è sfocata e il modello, se è severo, la perde a metà tratto.
+    minHandPresenceConfidence: 0.3,
+    minTrackingConfidence: 0.3,
   });
   try {
     state.landmarker = await HandLandmarker.createFromOptions(fileset, options("GPU"));
@@ -402,6 +500,8 @@ async function openStream() {
     video: {
       width: { ideal: 1280 },
       height: { ideal: 720 },
+      // Più frame al secondo = campioni più fitti e meno sfocatura sui gesti rapidi.
+      frameRate: { ideal: 60 },
       facingMode: { ideal: state.facingMode },
     },
     audio: false,
@@ -603,5 +703,7 @@ setStatus("Premi «Avvia camera»");
 // Hook per i test automatici: permette di iniettare landmark sintetici.
 // Attivo solo se la pagina è aperta con ?debug=1.
 if (new URLSearchParams(location.search).has("debug")) {
-  window.__handDesign = { state, processHand, renderStrokes, pinchRatio, landmarkToCanvas };
+  window.__handDesign = {
+    state, processHand, expireLostHand, renderStrokes, drawStrokeTail, pinchRatio, landmarkToCanvas,
+  };
 }

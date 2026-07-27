@@ -40,7 +40,26 @@ Sono supportate **due mani** contemporaneamente: ognuna disegna il proprio tratt
   Il rapporto è quindi indipendente da quanto sei lontano dalla camera. Due soglie con isteresi
   (chiusura a `ratio`, apertura a `ratio × 1.45`) evitano che il tratto lampeggi al limite del gesto.
 - **Punto di disegno**: il punto medio fra le due punte, filtrato con una media esponenziale
-  (α = 0.45) per togliere il tremolio del tracking.
+  **adattiva alla velocità** (α = 0.35 da fermo, fino a 1 in corsa): da fermo toglie il tremolio del
+  tracking, nei gesti rapidi lascia passare il movimento senza far restare indietro la punta.
+
+### Gesti veloci
+
+Muovendo la mano in fretta, la sfocatura da movimento confonde il modello: il pizzico sembra aprirsi
+per un frame o due e la mano sparisce del tutto per qualche fotogramma. Tre accorgimenti evitano che
+il tratto si spezzi:
+
+- **Conferma del rilascio** (130 ms): se le dita sembrano aprirsi, la penna non si alza subito. Se il
+  pizzico si richiude in tempo il tratto prosegue intero; se il rilascio è vero, i punti disegnati
+  nell'attesa vengono rimossi, quindi non resta nessuna codina.
+- **Tempo di grazia** (260 ms): se il tracking perde la mano, il tratto resta aperto e riprende da
+  dove era. Oltre quel tempo si chiude.
+- **Limite di ricucitura** (28% del riquadro): se la mano ricompare lontana, invece di tirare una riga
+  dritta attraverso il disegno comincia un tratto nuovo.
+
+Il disegno è **incrementale**: ogni nuovo punto aggiunge solo l'ultimo pezzo di curva invece di
+ricomporre tutta la tela, così il ritmo non cala man mano che il disegno si riempie. La tela viene
+ricomposta per intero solo quando serve davvero (annulla, gomma, ridimensionamento).
 - **Tratti**: memorizzati in coordinate normalizzate 0–1 e ridisegnati con curve quadratiche fra i
   punti medi, così le linee restano morbide e sopravvivono al ridimensionamento della finestra.
 

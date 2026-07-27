@@ -109,8 +109,12 @@ const server = http.createServer((req, res) => {
     const pts = api.state.strokes[0] ? api.state.strokes[0].points.length : 0;
     const pinchingWhileClosed = api.state.hands.get('Right').pinching;
 
-    // Dita separate: il tratto si chiude.
-    api.processHand('Right', mk(0.6, 0.5, 0.25));
+    // Dita separate: la penna si alza, ma solo dopo la conferma del rilascio
+    // (un frame isolato con le dita "aperte" è spesso sfocatura da movimento).
+    const tOpen = performance.now();
+    api.processHand('Right', mk(0.6, 0.5, 0.25), tOpen);
+    const pinchingWaitingConfirm = api.state.hands.get('Right').pinching;
+    api.processHand('Right', mk(0.6, 0.5, 0.25), tOpen + 300);
     const pinchingAfterOpen = api.state.hands.get('Right').pinching;
 
     // Nuovo pizzico -> nuovo tratto separato.
@@ -138,8 +142,10 @@ const server = http.createServer((req, res) => {
     api.processHand('Right', mk(0.5, 0.5, midSpread));
     const midRatio = api.pinchRatio(mk(0.5, 0.5, midSpread));
     const holdsThroughHysteresis = api.state.hands.get('Right').pinching;
-    // Oltre la soglia di apertura invece deve staccare.
-    api.processHand('Right', mk(0.5, 0.5, 0.6 / perUnit));
+    // Oltre la soglia di apertura, confermata nel tempo, deve staccare.
+    const tRel = performance.now();
+    api.processHand('Right', mk(0.5, 0.5, 0.6 / perUnit), tRel);
+    api.processHand('Right', mk(0.5, 0.5, 0.6 / perUnit), tRel + 300);
     const releasesAboveOff = api.state.hands.get('Right').pinching === false;
 
     // Gomma: cancella i tratti che tocca.
@@ -156,12 +162,15 @@ const server = http.createServer((req, res) => {
 
     return { ratioClosed, ratioOpen, afterDraw, pts, pinchingWhileClosed, pinchingAfterOpen,
              strokesAfterSecond, strokesWithTwoHands, painted, holdsThroughHysteresis,
+             pinchingWaitingConfirm,
              midRatio, releasesAboveOff,
              beforeErase, afterErase };
   }, {});
 
   check('pizzico chiuso riconosciuto', result.pinchingWhileClosed, `ratio=${result.ratioClosed.toFixed(3)}`);
-  check('dita separate = penna staccata', result.pinchingAfterOpen === false, `ratio=${result.ratioOpen.toFixed(3)}`);
+  check('dita separate = penna staccata (dopo conferma)',
+    result.pinchingAfterOpen === false && result.pinchingWaitingConfirm === true,
+    `ratio=${result.ratioOpen.toFixed(3)}`);
   check('isteresi tiene il tratto', result.holdsThroughHysteresis, `ratio=${result.midRatio.toFixed(3)}`);
   check('oltre la soglia di apertura stacca', result.releasesAboveOff);
   check('tratto creato durante il pizzico', result.afterDraw === 1 && result.pts > 5, `punti=${result.pts}`);
@@ -169,6 +178,121 @@ const server = http.createServer((req, res) => {
   check('due mani = due tratti indipendenti', result.strokesWithTwoHands === 3);
   check('pixel disegnati sul canvas', result.painted > 500, `pixel=${result.painted}`);
   check('gomma cancella il tratto', result.beforeErase === 1 && result.afterErase === 0);
+
+  // --- Gesti rapidi: il tratto non deve spezzarsi né restare indietro ---
+  const fast = await page.evaluate(() => {
+    const api = window.__handDesign;
+    const mk = (x, y, spread) => {
+      const lm = Array.from({ length: 21 }, () => ({ x: 0.5, y: 0.5, z: 0 }));
+      lm[0] = { x: 0.5, y: 0.85, z: 0 };
+      lm[9] = { x: 0.5, y: 0.60, z: 0 };
+      lm[4] = { x, y, z: 0 };
+      lm[8] = { x: x + spread, y, z: 0 };
+      return lm;
+    };
+    // Spread corrispondente a un dato "ratio", qualunque sia l'aspect della camera.
+    const perUnit = api.pinchRatio(mk(0.5, 0.5, 0.1)) / 0.1;
+    const CLOSED = 0.07 / perUnit;   // dita unite
+    const OPEN = 0.90 / perUnit;     // dita chiaramente separate
+    const canvas = document.getElementById('drawing');
+    const painted = () => {
+      const d = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      let n = 0;
+      for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++;
+      return n;
+    };
+    const reset = () => { api.state.strokes = []; api.state.hands.clear(); api.renderStrokes(); };
+    const stroke0 = () => api.state.strokes[0];
+    let t = 1000;
+    const FRAME = 16; // ~60 fps
+
+    // 1. Mano veloce: 3% del fotogramma per campione, cioè ~1.9 larghezze al secondo.
+    reset();
+    for (let i = 0; i < 25; i++) { api.processHand('Right', mk(0.15 + i * 0.03, 0.5, CLOSED), t); t += FRAME; }
+    const fastStrokes = api.state.strokes.length;
+    const fastPoints = stroke0() ? stroke0().points.length : 0;
+    const fastPainted = painted();
+    // Ritardo della punta rispetto alla posizione reale delle dita.
+    const lastLm = mk(0.15 + 24 * 0.03, 0.5, CLOSED);
+    const a = api.landmarkToCanvas(lastLm[4]), b = api.landmarkToCanvas(lastLm[8]);
+    const realX = (a.x + b.x) / 2, realY = (a.y + b.y) / 2;
+    const drawn = stroke0().points[stroke0().points.length - 1];
+    const lag = Math.hypot(drawn.x * canvas.width - realX, drawn.y * canvas.height - realY) / canvas.width;
+
+    // Coerenza fra disegno incrementale e rendering completo.
+    const beforeRerender = painted();
+    api.renderStrokes();
+    const afterRerender = painted();
+
+    // 2. Pizzico che "sfarfalla" per la sfocatura: 3 frame aperti e poi richiuso.
+    reset();
+    for (let i = 0; i < 10; i++) { api.processHand('Right', mk(0.2 + i * 0.02, 0.4, CLOSED), t); t += FRAME; }
+    const beforeFlicker = stroke0().points.length;
+    for (let i = 0; i < 3; i++) { api.processHand('Right', mk(0.4 + i * 0.02, 0.4, OPEN), t); t += FRAME; }
+    const pinchingDuringFlicker = api.state.hands.get('Right').pinching;
+    for (let i = 0; i < 6; i++) { api.processHand('Right', mk(0.46 + i * 0.02, 0.4, CLOSED), t); t += FRAME; }
+    const flickerStrokes = api.state.strokes.length;
+    const afterFlicker = stroke0().points.length;
+
+    // 3. Rilascio vero: le dita restano aperte oltre il tempo di attesa.
+    reset();
+    for (let i = 0; i < 10; i++) { api.processHand('Right', mk(0.2 + i * 0.02, 0.6, CLOSED), t); t += FRAME; }
+    const beforeRelease = stroke0().points.length;
+    for (let i = 0; i < 12; i++) { api.processHand('Right', mk(0.4, 0.6, OPEN), t); t += 20; } // 240ms
+    const releaseStrokes = api.state.strokes.length;
+    const afterRelease = stroke0().points.length;
+    const pinchingAfterRelease = api.state.hands.get('Right').pinching;
+
+    // 4. Frame persi dal tracking: sotto il tempo di grazia il tratto sopravvive.
+    reset();
+    for (let i = 0; i < 10; i++) { api.processHand('Right', mk(0.3 + i * 0.02, 0.7, CLOSED), t); t += FRAME; }
+    const hand = api.state.hands.get('Right');
+    api.expireLostHand(hand, t + 120);
+    const survivesShortGap = hand.stroke !== null && hand.pinching;
+    api.expireLostHand(hand, t + 400);
+    const closesLongGap = hand.stroke === null && !hand.pinching;
+
+    // 5. Mano ricomparsa lontanissima: tratto nuovo, non una riga attraverso il disegno.
+    reset();
+    for (let i = 0; i < 5; i++) { api.processHand('Right', mk(0.15 + i * 0.01, 0.3, CLOSED), t); t += FRAME; }
+    api.processHand('Right', mk(0.9, 0.8, CLOSED), t); t += FRAME;
+    const jumpStrokes = api.state.strokes.length;
+
+    // 6. Da fermo il tremolio del tracking resta filtrato.
+    reset();
+    for (let i = 0; i < 15; i++) {
+      api.processHand('Right', mk(0.5 + (i % 2 ? 0.004 : -0.004), 0.5, CLOSED), t); t += FRAME;
+    }
+    const pts = stroke0().points;
+    let spread = 0;
+    for (const p of pts) spread = Math.max(spread, Math.abs(p.x - pts[0].x));
+    const jitterRaw = 0.008 * (canvas.width / canvas.width); // ampiezza iniettata, normalizzata
+    reset();
+
+    return { fastStrokes, fastPoints, fastPainted, lag, beforeRerender, afterRerender,
+             beforeFlicker, afterFlicker, flickerStrokes, pinchingDuringFlicker,
+             beforeRelease, afterRelease, releaseStrokes, pinchingAfterRelease,
+             survivesShortGap, closesLongGap, jumpStrokes, jitterSpread: spread, jitterRaw };
+  });
+
+  check('gesto veloce: un tratto solo', fast.fastStrokes === 1 && fast.fastPoints >= 24,
+    `tratti=${fast.fastStrokes}, punti=${fast.fastPoints}`);
+  check('gesto veloce: la punta non resta indietro', fast.lag < 0.02,
+    `ritardo=${(fast.lag * 100).toFixed(2)}% della larghezza`);
+  check('disegno incrementale = rendering completo',
+    Math.abs(fast.beforeRerender - fast.afterRerender) / fast.afterRerender < 0.1,
+    `${fast.beforeRerender} vs ${fast.afterRerender} pixel`);
+  check('sfarfallio del pizzico: tratto non spezzato',
+    fast.flickerStrokes === 1 && fast.afterFlicker > fast.beforeFlicker && fast.pinchingDuringFlicker,
+    `punti ${fast.beforeFlicker} -> ${fast.afterFlicker}`);
+  check('rilascio vero: penna alzata senza coda',
+    fast.releaseStrokes === 1 && fast.afterRelease === fast.beforeRelease && !fast.pinchingAfterRelease,
+    `punti ${fast.beforeRelease} -> ${fast.afterRelease}`);
+  check('frame persi: tratto vivo sotto il tempo di grazia', fast.survivesShortGap);
+  check('assenza prolungata: tratto chiuso', fast.closesLongGap);
+  check('salto enorme: nuovo tratto, niente riga fantasma', fast.jumpStrokes === 2);
+  check('da fermo il tremolio resta filtrato', fast.jitterSpread < fast.jitterRaw,
+    `ampiezza disegnata=${fast.jitterSpread.toFixed(4)} vs iniettata=${fast.jitterRaw}`);
 
   // Undo / clear / salvataggio PNG.
   const uiOk = await page.evaluate(() => {
