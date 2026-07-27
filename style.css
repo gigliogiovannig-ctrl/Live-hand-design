@@ -1,0 +1,210 @@
+:root {
+  --bg: #0b0d12;
+  --panel: #151922;
+  --panel-2: #1d2230;
+  --text: #e8ecf4;
+  --muted: #96a0b5;
+  --accent: #0a84ff;
+  --radius: 12px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+.topbar {
+  padding: 18px 20px 6px;
+  text-align: center;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: 0.3px;
+}
+
+.hint {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.stage {
+  display: flex;
+  justify-content: center;
+  padding: 14px 16px;
+}
+
+.viewport {
+  position: relative;
+  width: min(100%, 1000px);
+  aspect-ratio: 4 / 3;
+  background: #000;
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+}
+
+.viewport video,
+.viewport canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.viewport video {
+  object-fit: cover;
+  /* Il video viene specchiato via classe .mirrored dal JS */
+}
+
+.viewport video.mirrored { transform: scaleX(-1); }
+
+#drawing { pointer-events: none; }
+#overlay { pointer-events: none; }
+
+.status {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: rgba(10, 12, 18, 0.7);
+  backdrop-filter: blur(6px);
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.status .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #6b7280;
+  transition: background 120ms ease;
+}
+
+.status .dot.ready { background: #30d158; }
+.status .dot.drawing { background: #ff2d55; box-shadow: 0 0 10px #ff2d55; }
+.status .dot.error { background: #ff453a; }
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  justify-content: center;
+  align-items: center;
+  padding: 4px 16px 18px;
+}
+
+.group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid #232a38;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+}
+
+.group label {
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.group.colors { gap: 6px; }
+
+button {
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid #2b3346;
+  padding: 8px 12px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, transform 80ms ease;
+}
+
+button:hover:not(:disabled) { background: #262d3d; }
+button:active:not(:disabled) { transform: translateY(1px); }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled) { background: #2b95ff; }
+
+button.tool.active {
+  border-color: var(--accent);
+  background: #14243a;
+}
+
+.swatch {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--c);
+  border: 2px solid transparent;
+  outline: 1px solid #2b3346;
+}
+
+.swatch.active {
+  border-color: #fff;
+  transform: scale(1.1);
+}
+
+input[type="range"] { width: 130px; accent-color: var(--accent); }
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+kbd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  background: #0e1219;
+  border: 1px solid #2b3346;
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: var(--muted);
+}
+
+.footnote {
+  margin: 0 auto 28px;
+  max-width: 720px;
+  padding: 0 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: #11151d;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+@media (max-width: 620px) {
+  .controls { gap: 10px; }
+  input[type="range"] { width: 100px; }
+}

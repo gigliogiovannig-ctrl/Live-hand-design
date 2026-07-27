@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live Hand Design — disegna con le mani</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Live Hand Design</h1>
+    <p class="hint">Unisci <strong>pollice e indice</strong> per disegnare, separali per staccare la penna.</p>
+  </header>
+
+  <main class="stage" id="stage">
+    <div class="viewport" id="viewport">
+      <video id="video" playsinline autoplay muted></video>
+      <canvas id="drawing"></canvas>
+      <canvas id="overlay"></canvas>
+
+      <div class="status" id="status">
+        <span class="dot" id="statusDot"></span>
+        <span id="statusText">Premi «Avvia camera»</span>
+      </div>
+    </div>
+  </main>
+
+  <section class="controls">
+    <div class="group">
+      <button id="startBtn" class="primary">Avvia camera</button>
+      <button id="stopBtn" disabled>Ferma</button>
+    </div>
+
+    <div class="group tools">
+      <button id="penBtn" class="tool active" data-tool="pen">✏️ Penna</button>
+      <button id="eraserBtn" class="tool" data-tool="eraser">🧽 Gomma</button>
+    </div>
+
+    <div class="group colors" id="palette">
+      <button class="swatch active" data-color="#ff2d55" style="--c:#ff2d55"></button>
+      <button class="swatch" data-color="#ffd60a" style="--c:#ffd60a"></button>
+      <button class="swatch" data-color="#30d158" style="--c:#30d158"></button>
+      <button class="swatch" data-color="#0a84ff" style="--c:#0a84ff"></button>
+      <button class="swatch" data-color="#bf5af2" style="--c:#bf5af2"></button>
+      <button class="swatch" data-color="#ffffff" style="--c:#ffffff"></button>
+    </div>
+
+    <div class="group">
+      <label for="size">Spessore <span id="sizeVal">6</span></label>
+      <input type="range" id="size" min="2" max="40" value="6">
+    </div>
+
+    <div class="group">
+      <label for="sensitivity">Sensibilità pizzico <span id="sensVal">0.35</span></label>
+      <input type="range" id="sensitivity" min="0.15" max="0.60" step="0.01" value="0.35">
+    </div>
+
+    <div class="group">
+      <label class="check"><input type="checkbox" id="showSkeleton" checked> Mostra scheletro mano</label>
+      <label class="check"><input type="checkbox" id="mirror" checked> Specchia (selfie)</label>
+    </div>
+
+    <div class="group">
+      <button id="undoBtn">↶ Annulla <kbd>Z</kbd></button>
+      <button id="clearBtn">🗑 Pulisci <kbd>C</kbd></button>
+      <button id="saveBtn">💾 Salva PNG <kbd>S</kbd></button>
+    </div>
+  </section>
+
+  <p class="footnote">
+    Serve una connessione HTTPS oppure <code>localhost</code> perché il browser conceda la webcam.
+    I frame video restano sul tuo dispositivo: nessuna immagine viene inviata a un server.
+  </p>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
