@@ -23,6 +23,8 @@ Tutto gira nel browser: i frame della webcam non lasciano mai il dispositivo.
 | Comando | Cosa fa |
 | --- | --- |
 | Pizzico pollice + indice | Disegna (o cancella, con la gomma attiva) |
+| ✌️ Segno V (indice e medio alzati) | Alterna penna e gomma, dopo mezzo secondo di posa |
+| ✊ Pugno chiuso per 1 secondo | Pulisce tutta la tela (annullabile con `Z`) |
 | Penna / Gomma | Cambia strumento; la gomma elimina i tratti che tocca |
 | Tavolozza e slider spessore | Colore e larghezza del tratto |
 | Sensibilità pizzico | Quanto devono essere vicine le dita perché il gesto scatti |
@@ -56,6 +58,24 @@ il tratto si spezzi:
   dove era. Oltre quel tempo si chiude.
 - **Limite di ricucitura** (28% del riquadro): se la mano ricompare lontana, invece di tirare una riga
   dritta attraverso il disegno comincia un tratto nuovo.
+
+### Pose a mano libera
+
+Oltre al pizzico l'app riconosce due pose, valutate solo quando non si sta disegnando:
+
+- **Segno V** (indice e medio tesi, anulare e mignolo chiusi) tenuto **400 ms** alterna penna e gomma.
+- **Pugno chiuso** tenuto **1 secondo** pulisce la tela. Siccome è un gesto distruttivo, la pulizia
+  si annulla con `Z` o col pulsante *Annulla*.
+
+Un dito è considerato teso confrontando quanto dista dal polso la sua punta rispetto alla nocca
+centrale: è un rapporto, quindi non dipende da quanto è lontana la mano né da come è ruotata. Mentre
+tieni la posa, un **anello si riempie** attorno al palmo (blu per il cambio strumento, rosso per la
+pulizia): finché non è completo puoi disfare il gesto e non succede nulla.
+
+Il pugno viene riconosciuto **prima** del pizzico, non dopo: chiudendo il pugno il pollice si ripiega
+sopra le dita e finisce vicino alla punta dell'indice, quindi la sola distanza pollice-indice lo
+farebbe passare per un pizzico. A distinguerli è dove stanno le punte delle dita — raccolte contro il
+palmo nel pugno, protese in avanti nel pizzico.
 
 Il disegno è **incrementale**: ogni nuovo punto aggiunge solo l'ultimo pezzo di curva invece di
 ricomporre tutta la tela, così il ritmo non cala man mano che il disegno si riempie. La tela viene

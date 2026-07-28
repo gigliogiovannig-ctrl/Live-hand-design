@@ -86,17 +86,67 @@ const server = http.createServer((req, res) => {
   // Lascia girare qualche frame di rilevamento reale sul video finto.
   await page.waitForTimeout(2500);
 
+  // Costruttori di mani sintetiche, condivisi da tutti i blocchi di test.
+  // Vanno riempiti tutti e 21 i landmark: una mano con le articolazioni lasciate
+  // al centro somiglia a un pugno chiuso e farebbe scattare le pose.
+  await page.evaluate(() => {
+    const MCP_X = { 5: 0.44, 9: 0.50, 13: 0.56, 17: 0.61 };
+    const MCP_Y = { 5: 0.62, 9: 0.60, 13: 0.62, 17: 0.65 };
+    const FINGERS = [
+      { name: 'index', mcp: 5, pip: 6, dip: 7, tip: 8 },
+      { name: 'middle', mcp: 9, pip: 10, dip: 11, tip: 12 },
+      { name: 'ring', mcp: 13, pip: 14, dip: 15, tip: 16 },
+      { name: 'pinky', mcp: 17, pip: 18, dip: 19, tip: 20 },
+    ];
+
+    /** Mano con le dita elencate in `extended` tese e le altre chiuse sul palmo. */
+    window.__hand = (extended, thumbTip) => {
+      const lm = Array.from({ length: 21 }, () => ({ x: 0.5, y: 0.5, z: 0 }));
+      lm[0] = { x: 0.5, y: 0.85, z: 0 };
+      for (const f of FINGERS) {
+        const x = MCP_X[f.mcp], my = MCP_Y[f.mcp];
+        lm[f.mcp] = { x, y: my, z: 0 };
+        const out = extended.includes(f.name);
+        lm[f.pip] = { x, y: my - (out ? 0.08 : 0.06), z: 0 };
+        lm[f.dip] = { x, y: my - (out ? 0.16 : 0.02), z: 0 };
+        lm[f.tip] = { x, y: my - (out ? 0.22 : -0.02), z: 0 };
+      }
+      lm[1] = { x: 0.38, y: 0.78, z: 0 };
+      lm[2] = { x: 0.35, y: 0.72, z: 0 };
+      lm[3] = { x: 0.36, y: 0.67, z: 0 };
+      lm[4] = { x: thumbTip.x, y: thumbTip.y, z: 0 };
+      return lm;
+    };
+
+    /**
+     * Mano che pizzica: punta del pollice in (x, y), punta dell'indice spostata
+     * di `spread`, indice teso in avanti (come quando si pizzica davvero) e le
+     * altre dita raccolte.
+     */
+    window.__mk = (x, y, spread) => {
+      const lm = window.__hand(['middle'], { x, y });
+      const mcp = { x: 0.44, y: 0.62 };
+      const tip = { x: x + spread, y };
+      lm[6] = { x: mcp.x + (tip.x - mcp.x) * 0.35, y: mcp.y + (tip.y - mcp.y) * 0.35, z: 0 };
+      lm[7] = { x: mcp.x + (tip.x - mcp.x) * 0.7, y: mcp.y + (tip.y - mcp.y) * 0.7, z: 0 };
+      lm[8] = { x: tip.x, y: tip.y, z: 0 };
+      // Il medio resta piegato: una V richiede indice E medio tesi.
+      lm[10] = { x: 0.5, y: 0.54, z: 0 };
+      lm[11] = { x: 0.5, y: 0.58, z: 0 };
+      lm[12] = { x: 0.5, y: 0.62, z: 0 };
+      return lm;
+    };
+
+    window.__V = () => window.__hand(['index', 'middle'], { x: 0.36, y: 0.66 });
+    // Pugno vero: pollice ripiegato sopra le dita, vicino alla punta dell'indice.
+    window.__FIST = () => window.__hand([], { x: 0.46, y: 0.66 });
+    window.__OPEN = () => window.__hand(['index', 'middle', 'ring', 'pinky'], { x: 0.33, y: 0.62 });
+  });
+
   // --- Gesto sintetico: pizzico chiuso che si muove -> deve nascere un tratto ---
   const result = await page.evaluate(({ }) => {
     const api = window.__handDesign;
-    const mk = (x, y, spread) => {
-      const lm = Array.from({ length: 21 }, () => ({ x: 0.5, y: 0.5, z: 0 }));
-      lm[0] = { x: 0.5, y: 0.85, z: 0 };
-      lm[9] = { x: 0.5, y: 0.60, z: 0 };
-      lm[4] = { x, y, z: 0 };
-      lm[8] = { x: x + spread, y, z: 0 };
-      return lm;
-    };
+    const mk = window.__mk;
     api.state.strokes = [];
     api.state.hands.clear();
 
@@ -182,14 +232,7 @@ const server = http.createServer((req, res) => {
   // --- Gesti rapidi: il tratto non deve spezzarsi né restare indietro ---
   const fast = await page.evaluate(() => {
     const api = window.__handDesign;
-    const mk = (x, y, spread) => {
-      const lm = Array.from({ length: 21 }, () => ({ x: 0.5, y: 0.5, z: 0 }));
-      lm[0] = { x: 0.5, y: 0.85, z: 0 };
-      lm[9] = { x: 0.5, y: 0.60, z: 0 };
-      lm[4] = { x, y, z: 0 };
-      lm[8] = { x: x + spread, y, z: 0 };
-      return lm;
-    };
+    const mk = window.__mk;
     // Spread corrispondente a un dato "ratio", qualunque sia l'aspect della camera.
     const perUnit = api.pinchRatio(mk(0.5, 0.5, 0.1)) / 0.1;
     const CLOSED = 0.07 / perUnit;   // dita unite
@@ -293,6 +336,139 @@ const server = http.createServer((req, res) => {
   check('salto enorme: nuovo tratto, niente riga fantasma', fast.jumpStrokes === 2);
   check('da fermo il tremolio resta filtrato', fast.jitterSpread < fast.jitterRaw,
     `ampiezza disegnata=${fast.jitterSpread.toFixed(4)} vs iniettata=${fast.jitterRaw}`);
+
+  // --- Pose: segno V cambia strumento, pugno chiuso pulisce ---
+  const poses = await page.evaluate(() => {
+    const api = window.__handDesign;
+    const V = window.__V, FIST = window.__FIST, OPEN = window.__OPEN;
+    // Pizzico: indice teso in avanti con la punta sul pollice.
+    const PINCH = () => window.__mk(0.40, 0.40, 0.01);
+
+    const reset = () => {
+      api.state.strokes = []; api.state.cleared = null; api.state.hands.clear();
+      api.setTool('pen'); api.renderStrokes();
+    };
+
+    // Riconoscimento delle pose isolato dal resto.
+    const poseV = api.detectPose(V());
+    const poseFist = api.detectPose(FIST());
+    const poseOpen = api.detectPose(OPEN());
+    const posePinch = api.detectPose(PINCH());
+    const pinchRatioInFist = api.pinchRatio(FIST());
+    const pinchRatioInPinch = api.pinchRatio(PINCH());
+
+    // Segno V tenuto: cambia strumento una volta sola.
+    reset();
+    let t = 5000;
+    api.processHand('Right', V(), t);
+    const toolAtStart = api.state.tool;
+    api.processHand('Right', V(), t + 200);
+    const toolTooEarly = api.state.tool;                 // 200ms: non basta
+    api.processHand('Right', V(), t + 500);
+    const toolAfterHold = api.state.tool;                // 500ms: cambiato
+    api.processHand('Right', V(), t + 2000);
+    const toolStillHeld = api.state.tool;                // tenuto oltre: non rimbalza
+
+    // Disfare e rifare la V riporta alla penna.
+    api.processHand('Right', OPEN(), t + 2100);
+    api.processHand('Right', V(), t + 2200);
+    api.processHand('Right', V(), t + 2700);
+    const toolAfterSecondV = api.state.tool;
+
+    // Pugno chiuso: pulisce solo dopo un secondo pieno, ed è annullabile.
+    reset();
+    api.state.strokes = [
+      { color: '#fff', width: 6, points: [{ x: .1, y: .1 }, { x: .5, y: .5 }] },
+      { color: '#fff', width: 6, points: [{ x: .2, y: .2 }, { x: .6, y: .6 }] },
+    ];
+    api.renderStrokes();
+    t = 9000;
+    api.processHand('Right', FIST(), t);
+    api.processHand('Right', FIST(), t + 700);
+    const strokesBeforeSecond = api.state.strokes.length;   // 700ms: ancora tutto lì
+    api.processHand('Right', FIST(), t + 1100);
+    const strokesAfterFist = api.state.strokes.length;      // 1.1s: pulito
+    const drewDuringFist = api.state.hands.get('Right').pinching;
+    api.undo();
+    const strokesAfterUndo = api.state.strokes.length;      // recuperabile
+
+    // Pugno mentre si disegna: il pizzico non deve tenere in ostaggio la posa,
+    // ma nemmeno il pugno deve disegnare.
+    reset();
+    t = 12000;
+    for (let i = 0; i < 5; i++) api.processHand('Right', PINCH(), t + i * 16);
+    const strokesFromPinch = api.state.strokes.length;
+    const toolBeforeVWhileDrawing = api.state.tool;
+    // V mentre il pizzico è ancora attivo: ignorata finché la penna non si stacca.
+    api.processHand('Right', V(), t + 100);
+    api.processHand('Right', V(), t + 200);
+    const toolWhileDrawing = api.state.tool;
+
+    reset();
+    return { poseV, poseFist, poseOpen, posePinch, pinchRatioInFist, pinchRatioInPinch,
+             toolAtStart, toolTooEarly, toolAfterHold, toolStillHeld, toolAfterSecondV,
+             strokesBeforeSecond, strokesAfterFist, strokesAfterUndo, drewDuringFist,
+             strokesFromPinch, toolBeforeVWhileDrawing, toolWhileDrawing };
+  });
+
+  check('riconosce il segno V', poses.poseV === 'toggleTool', `posa=${poses.poseV}`);
+  check('riconosce il pugno chiuso', poses.poseFist === 'clearAll', `posa=${poses.poseFist}`);
+  check('mano aperta e pizzico non sono pose', poses.poseOpen === null && poses.posePinch === null,
+    `aperta=${poses.poseOpen}, pizzico=${poses.posePinch}`);
+  check('il pugno non viene scambiato per un pizzico',
+    poses.pinchRatioInFist < 0.35 && !poses.drewDuringFist,
+    `ratio pugno=${poses.pinchRatioInFist.toFixed(2)} (sotto soglia, ma il pugno ha la precedenza)`);
+  check('il pizzico sintetico disegna', poses.pinchRatioInPinch < 0.35 && poses.strokesFromPinch === 1,
+    `ratio=${poses.pinchRatioInPinch.toFixed(2)}`);
+  check('V: cambia strumento solo dopo 400ms',
+    poses.toolAtStart === 'pen' && poses.toolTooEarly === 'pen' && poses.toolAfterHold === 'eraser',
+    `${poses.toolAtStart} -> ${poses.toolTooEarly} (200ms) -> ${poses.toolAfterHold} (500ms)`);
+  check('V tenuta a lungo non rimbalza', poses.toolStillHeld === 'eraser');
+  check('V rifatta torna alla penna', poses.toolAfterSecondV === 'pen');
+  check('pugno: pulisce solo dopo un secondo',
+    poses.strokesBeforeSecond === 2 && poses.strokesAfterFist === 0,
+    `${poses.strokesBeforeSecond} tratti a 700ms, ${poses.strokesAfterFist} a 1.1s`);
+  check('pulizia da gesto annullabile', poses.strokesAfterUndo === 2);
+  check('V ignorata mentre si disegna', poses.toolWhileDrawing === poses.toolBeforeVWhileDrawing,
+    `strumento=${poses.toolWhileDrawing}`);
+
+  // L'anello di avanzamento della posa vive nell'overlay, che con la webcam
+  // finta non vede mai una mano: lo si chiama a mano con risultati sintetici.
+  const overlay = await page.evaluate(() => {
+    const api = window.__handDesign;
+    const canvas = document.getElementById('overlay');
+    const painted = () => {
+      const d = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      let n = 0;
+      for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++;
+      return n;
+    };
+    api.state.hands.clear();
+    const results = { landmarks: [window.__V()], handedness: [[{ categoryName: 'Right' }]] };
+
+    // Posa appena iniziata: anello quasi vuoto.
+    api.processHand('Right', window.__V(), performance.now());
+    api.drawOverlay(results);
+    const withPose = painted();
+
+    // Posa già scattata: l'anello sparisce.
+    api.state.hands.get('Right').poseFired = true;
+    api.drawOverlay(results);
+    const afterFired = painted();
+
+    // Pugno: stessa cosa, ma anello rosso.
+    api.state.hands.clear();
+    api.processHand('Right', window.__FIST(), performance.now());
+    api.drawOverlay({ landmarks: [window.__FIST()], handedness: [[{ categoryName: 'Right' }]] });
+    const withFist = painted();
+
+    api.drawOverlay(null);
+    return { withPose, afterFired, withFist, cleared: painted() };
+  });
+  check('anello di avanzamento disegnato durante la posa',
+    overlay.withPose > 0 && overlay.withFist > 0 && overlay.withPose > overlay.afterFired,
+    `V=${overlay.withPose}px, pugno=${overlay.withFist}px, dopo lo scatto=${overlay.afterFired}px`);
+  check('overlay ripulito senza mani', overlay.cleared === 0);
 
   // Undo / clear / salvataggio PNG.
   const uiOk = await page.evaluate(() => {

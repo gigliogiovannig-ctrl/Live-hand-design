@@ -21,6 +21,17 @@ const THUMB_TIP = 4;
 const INDEX_TIP = 8;
 const MIDDLE_MCP = 9;
 
+// Articolazioni per capire se un dito è teso o chiuso.
+const FINGERS = [
+  { name: "index", mcp: 5, pip: 6, tip: 8 },
+  { name: "middle", mcp: 9, pip: 10, tip: 12 },
+  { name: "ring", mcp: 13, pip: 14, tip: 16 },
+  { name: "pinky", mcp: 17, pip: 18, tip: 20 },
+];
+
+// Quanto va tenuta una posa prima che faccia effetto.
+const POSE_HOLD = { toggleTool: 400, clearAll: 1000 };
+
 // Connessioni per disegnare lo scheletro della mano.
 const HAND_CONNECTIONS = [
   [0, 1], [1, 2], [2, 3], [3, 4],
@@ -75,6 +86,7 @@ const state = {
   releaseMs: 130,      // quanto si aspetta prima di credere a un rilascio
   graceMs: 260,        // quanto si tiene vivo il tratto se la mano sparisce
   strokes: [],         // tratti completati + in corso, in coordinate normalizzate 0..1
+  cleared: null,       // ultima tela cancellata, per poter annullare la pulizia
   hands: new Map(),    // stato per mano
 };
 
@@ -137,20 +149,55 @@ function canvasScale() {
   return drawingCanvas.width / viewport.clientWidth || 1;
 }
 
+/** Distanza fra due punti normalizzati, corretta per le proporzioni del video. */
+function handDist(a, b) {
+  const aspect = (video.videoWidth || 4) / (video.videoHeight || 3);
+  return Math.hypot((a.x - b.x) * aspect, a.y - b.y);
+}
+
 /**
  * Forza del pizzico: distanza pollice-indice normalizzata sulla dimensione
  * della mano (polso -> nocca del medio). Così è indipendente dalla distanza
  * dalla camera e dalla grandezza della mano.
  */
 function pinchRatio(landmarks) {
-  const aspect = (video.videoWidth || 4) / (video.videoHeight || 3);
-  const dist = (a, b) => {
-    const dx = (a.x - b.x) * aspect;
-    const dy = a.y - b.y;
-    return Math.hypot(dx, dy);
-  };
-  const handSize = dist(landmarks[WRIST], landmarks[MIDDLE_MCP]) || 1e-6;
-  return dist(landmarks[THUMB_TIP], landmarks[INDEX_TIP]) / handSize;
+  const handSize = handDist(landmarks[WRIST], landmarks[MIDDLE_MCP]) || 1e-6;
+  return handDist(landmarks[THUMB_TIP], landmarks[INDEX_TIP]) / handSize;
+}
+
+/**
+ * Dito teso o chiuso: si confronta quanto dista dal polso la punta rispetto
+ * alla nocca centrale. È un rapporto, quindi non dipende da quanto è lontana
+ * la mano né da come è ruotata.
+ */
+function fingerReach(landmarks, finger) {
+  const wrist = landmarks[WRIST];
+  return handDist(landmarks[finger.tip], wrist) / (handDist(landmarks[finger.pip], wrist) || 1e-6);
+}
+
+/** Pugno stretto: dita chiuse e punte raccolte contro il palmo. */
+function isTightFist(landmarks) {
+  if (!FINGERS.every((f) => fingerReach(landmarks, f) < 1.02)) return false;
+  const palm = { x: 0, y: 0 };
+  for (const f of FINGERS) {
+    palm.x += landmarks[f.mcp].x / FINGERS.length;
+    palm.y += landmarks[f.mcp].y / FINGERS.length;
+  }
+  const size = handDist(landmarks[WRIST], landmarks[MIDDLE_MCP]) || 1e-6;
+  // Nel pizzico l'indice sta davanti alla mano, ben lontano dal palmo: è questo
+  // che distingue il pugno da un pizzico, in cui pure il pollice tocca l'indice.
+  return FINGERS.every((f) => handDist(landmarks[f.tip], palm) < size * 0.75);
+}
+
+/** Posa riconosciuta: segno V (cambia strumento) o pugno chiuso (pulisce). */
+function detectPose(landmarks) {
+  const reach = {};
+  for (const f of FINGERS) reach[f.name] = fingerReach(landmarks, f);
+
+  const vSign = reach.index > 1.15 && reach.middle > 1.15 && reach.ring < 1.02 && reach.pinky < 1.02;
+  if (vSign) return "toggleTool";
+  if (isTightFist(landmarks)) return "clearAll";
+  return null;
 }
 
 // --- Disegno ----------------------------------------------------------------
@@ -278,6 +325,36 @@ function drawOverlay(results) {
       }
     }
 
+    // Posa in corso: anello che si riempie, per vedere cosa sta per scattare
+    // e avere il tempo di disfare il gesto.
+    if (hand && hand.poseName && !hand.poseFired) {
+      const progress = Math.min((performance.now() - hand.poseSince) / POSE_HOLD[hand.poseName], 1);
+      const palm = landmarkToCanvas(landmarks[MIDDLE_MCP]);
+      const wrist = landmarkToCanvas(landmarks[WRIST]);
+      const radius = Math.max(Math.hypot(palm.x - wrist.x, palm.y - wrist.y) * 0.9, 30 * s);
+      const clearing = hand.poseName === "clearAll";
+
+      ctx.lineWidth = 5 * s;
+      ctx.strokeStyle = "rgba(255,255,255,0.18)";
+      ctx.beginPath();
+      ctx.arc(palm.x, palm.y, radius, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.strokeStyle = clearing ? "#ff453a" : "#0a84ff";
+      ctx.beginPath();
+      ctx.arc(palm.x, palm.y, radius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * progress);
+      ctx.stroke();
+
+      ctx.fillStyle = "#fff";
+      ctx.font = `${13 * s}px -apple-system, system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.fillText(
+        clearing ? "Pulisco tutto…" : state.tool === "pen" ? "→ Gomma" : "→ Penna",
+        palm.x, palm.y - radius - 10 * s
+      );
+      ctx.textAlign = "start";
+    }
+
     // Cursore: cerchio fra pollice e indice, pieno quando il pizzico è chiuso.
     const thumb = landmarkToCanvas(landmarks[THUMB_TIP]);
     const index = landmarkToCanvas(landmarks[INDEX_TIP]);
@@ -321,17 +398,22 @@ function processHand(key, landmarks, now = performance.now()) {
   let hand = state.hands.get(key);
   if (!hand) {
     hand = { pinching: false, stroke: null, smooth: null, pendingRelease: null, suspendMark: 0,
-             lastSeen: now, lastTs: now };
+             poseName: null, poseSince: now, poseFired: false, lastSeen: now, lastTs: now };
     state.hands.set(key, hand);
   }
   hand.lastSeen = now;
+
+  const pose = detectPose(landmarks);
 
   const ratio = pinchRatio(landmarks);
   const onThreshold = state.pinchOnRatio;
   const offThreshold = state.pinchOnRatio * 1.45; // isteresi: evita lo sfarfallio
 
   const wasPinching = hand.pinching;
-  const rawPinch = wasPinching ? ratio < offThreshold : ratio < onThreshold;
+  // In un pugno chiuso il pollice si ripiega sopra le dita e finisce vicino alla
+  // punta dell'indice: senza questa precedenza sembrerebbe un pizzico.
+  const rawPinch = pose === "clearAll" ? false
+    : wasPinching ? ratio < offThreshold : ratio < onThreshold;
 
   // Quando la mano corre, la sfocatura da movimento sballa i landmark e il
   // pizzico può sembrare aperto per un frame o due. Invece di alzare subito la
@@ -354,6 +436,9 @@ function processHand(key, landmarks, now = performance.now()) {
     hand.pendingRelease = null;
   }
   hand.pinching = pinching;
+
+  // Le pose valgono solo a mano libera: mentre si disegna non si cambia strumento.
+  updatePose(hand, pinching && pose !== "clearAll" ? null : pose, now);
 
   // Punto di disegno: a metà fra le punte di pollice e indice.
   const thumb = landmarkToCanvas(landmarks[THUMB_TIP]);
@@ -409,6 +494,29 @@ function processHand(key, landmarks, now = performance.now()) {
 }
 
 /**
+ * Tiene il conto di quanto una posa è stata mantenuta e la fa scattare una volta
+ * sola: per ripeterla bisogna disfare il gesto e rifarlo.
+ */
+function updatePose(hand, pose, now) {
+  if (pose !== hand.poseName) {
+    hand.poseName = pose;
+    hand.poseSince = now;
+    hand.poseFired = false;
+    return;
+  }
+  if (!pose || hand.poseFired || now - hand.poseSince < POSE_HOLD[pose]) return;
+
+  hand.poseFired = true;
+  if (pose === "toggleTool") {
+    setTool(state.tool === "pen" ? "eraser" : "pen");
+    setStatus(state.tool === "eraser" ? "Segno V — gomma" : "Segno V — penna", "ready");
+  } else if (pose === "clearAll") {
+    clearAll();
+    setStatus("Pugno chiuso — tela pulita (annullabile)", "ready");
+  }
+}
+
+/**
  * Mano non rilevata in questo frame: la si tiene "viva" per un attimo. Un buco
  * di uno o due frame è normale quando il movimento è rapido, e chiudere subito
  * il tratto è ciò che spezzava le linee veloci.
@@ -419,6 +527,8 @@ function expireLostHand(hand, now) {
   hand.stroke = null;
   hand.smooth = null;
   hand.pendingRelease = null;
+  hand.poseName = null;
+  hand.poseFired = false;
 }
 
 // --- Loop -------------------------------------------------------------------
@@ -605,14 +715,15 @@ palette.addEventListener("click", (e) => {
   state.color = btn.dataset.color;
 });
 
+function setTool(tool) {
+  state.tool = tool;
+  toolButtons.forEach((b) => b.classList.toggle("active", b.dataset.tool === tool));
+  // Cambio strumento a metà gesto: chiudi i tratti aperti.
+  for (const hand of state.hands.values()) hand.stroke = null;
+}
+
 toolButtons.forEach((btn) => {
-  btn.addEventListener("click", () => {
-    toolButtons.forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
-    state.tool = btn.dataset.tool;
-    // Cambio strumento a metà gesto: chiudi i tratti aperti.
-    for (const hand of state.hands.values()) hand.stroke = null;
-  });
+  btn.addEventListener("click", () => setTool(btn.dataset.tool));
 });
 
 sizeInput.addEventListener("input", () => {
@@ -631,6 +742,13 @@ mirrorCheck.addEventListener("change", () => {
 });
 
 function undo() {
+  // Una pulizia totale si annulla: il pugno chiuso è un gesto che può scappare.
+  if (state.strokes.length === 0 && state.cleared) {
+    state.strokes = state.cleared;
+    state.cleared = null;
+    renderStrokes();
+    return;
+  }
   if (state.strokes.length === 0) return;
   state.strokes.pop();
   for (const hand of state.hands.values()) hand.stroke = null;
@@ -638,6 +756,7 @@ function undo() {
 }
 
 function clearAll() {
+  if (state.strokes.length) state.cleared = state.strokes;
   state.strokes = [];
   for (const hand of state.hands.values()) hand.stroke = null;
   renderStrokes();
@@ -705,5 +824,6 @@ setStatus("Premi «Avvia camera»");
 if (new URLSearchParams(location.search).has("debug")) {
   window.__handDesign = {
     state, processHand, expireLostHand, renderStrokes, drawStrokeTail, pinchRatio, landmarkToCanvas,
+    detectPose, isTightFist, fingerReach, setTool, undo, clearAll, drawOverlay, FINGERS, POSE_HOLD,
   };
 }

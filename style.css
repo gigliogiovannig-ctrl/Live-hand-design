@@ -35,6 +35,23 @@ html, body {
   font-size: 14px;
 }
 
+.gestures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  justify-content: center;
+  margin-top: 6px;
+  font-size: 13px;
+}
+
+.gestures span {
+  background: var(--panel);
+  border: 1px solid #232a38;
+  border-radius: 999px;
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+
 .stage {
   display: flex;
   justify-content: center;
