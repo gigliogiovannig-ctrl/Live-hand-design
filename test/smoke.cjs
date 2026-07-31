@@ -138,6 +138,7 @@ const server = http.createServer((req, res) => {
     };
 
     window.__V = () => window.__hand(['index', 'middle'], { x: 0.36, y: 0.66 });
+    window.__THREE = () => window.__hand(['index', 'middle', 'ring'], { x: 0.36, y: 0.66 });
     // Pugno vero: pollice ripiegato sopra le dita, vicino alla punta dell'indice.
     window.__FIST = () => window.__hand([], { x: 0.46, y: 0.66 });
     window.__OPEN = () => window.__hand(['index', 'middle', 'ring', 'pinky'], { x: 0.33, y: 0.62 });
@@ -431,6 +432,93 @@ const server = http.createServer((req, res) => {
   check('pulizia da gesto annullabile', poses.strokesAfterUndo === 2);
   check('V ignorata mentre si disegna', poses.toolWhileDrawing === poses.toolBeforeVWhileDrawing,
     `strumento=${poses.toolWhileDrawing}`);
+
+  // --- Segno del 3: sospende e riprende il disegno ---
+  const lock = await page.evaluate(() => {
+    const api = window.__handDesign;
+    const THREE = window.__THREE, V = window.__V, FIST = window.__FIST, OPEN = window.__OPEN;
+    const PINCH = (x = 0.40, y = 0.40) => window.__mk(x, y, 0.01);
+    const reset = () => {
+      api.state.strokes = []; api.state.cleared = null; api.state.hands.clear();
+      api.setTool('pen'); api.setLocked(false); api.renderStrokes();
+    };
+
+    // Il 3 e la V si distinguono solo per l'anulare: non vanno confusi.
+    const poseThree = api.detectPose(THREE());
+    const poseV = api.detectPose(V());
+
+    // Tenuto mezzo secondo sospende; prima no.
+    reset();
+    let t = 20000;
+    api.processHand('Right', THREE(), t);
+    api.processHand('Right', THREE(), t + 300);
+    const lockedTooEarly = api.state.locked;              // 300ms: ancora attivo
+    api.processHand('Right', THREE(), t + 600);
+    const lockedAfterHold = api.state.locked;             // 600ms: sospeso
+    const badgeVisible = !document.getElementById('pausedBadge').hidden;
+
+    // Sospeso: il pizzico non disegna.
+    for (let i = 0; i < 10; i++) api.processHand('Right', PINCH(0.3 + i * 0.02, 0.4), t + 700 + i * 16);
+    const strokesWhileLocked = api.state.strokes.length;
+
+    // Sospeso: nemmeno la gomma cancella.
+    api.state.strokes = [{ color: '#fff', width: 6, points: [{ x: .5, y: .5 }] }];
+    api.setTool('eraser');            // (da pulsante: sblocca, quindi si risospende)
+    api.setLocked(true);
+    api.state.hands.clear();
+    for (let i = 0; i < 10; i++) api.processHand('Right', PINCH(0.5, 0.5), t + 900 + i * 16);
+    const strokesAfterLockedEraser = api.state.strokes.length;
+
+    // Sospeso: V e pugno restano inerti.
+    api.state.hands.clear();
+    let t2 = t + 2000;
+    for (const f of [0, 500, 900]) api.processHand('Right', V(), t2 + f);
+    const toolAfterLockedV = api.state.tool;
+    api.state.hands.clear();
+    for (const f of [0, 700, 1200]) api.processHand('Right', FIST(), t2 + 1000 + f);
+    const strokesAfterLockedFist = api.state.strokes.length;
+
+    // Rifare il 3 riprende, con lo strumento di prima (gomma).
+    api.state.hands.clear();
+    let t3 = t2 + 4000;
+    api.processHand('Right', THREE(), t3);
+    api.processHand('Right', THREE(), t3 + 600);
+    const lockedAfterSecondThree = api.state.locked;
+    const toolAfterResume = api.state.tool;
+
+    // Ripreso: il pizzico torna a funzionare (gomma attiva -> cancella).
+    api.state.hands.clear();
+    api.state.strokes = [{ color: '#fff', width: 6, points: [{ x: .5, y: .5 }] }];
+    for (let i = 0; i < 10; i++) api.processHand('Right', PINCH(0.5, 0.5), t3 + 700 + i * 16);
+    const erasedAfterResume = api.state.strokes.length === 0;
+
+    // Il pulsante dello strumento è la via d'uscita col mouse.
+    api.setLocked(true);
+    api.setTool('pen');
+    const unlockedByButton = !api.state.locked;
+
+    reset();
+    return { poseThree, poseV, lockedTooEarly, lockedAfterHold, badgeVisible, strokesWhileLocked,
+             strokesAfterLockedEraser, toolAfterLockedV, strokesAfterLockedFist,
+             lockedAfterSecondThree, toolAfterResume, erasedAfterResume, unlockedByButton };
+  });
+
+  check('riconosce il segno del 3, distinto dalla V',
+    lock.poseThree === 'toggleLock' && lock.poseV === 'toggleTool',
+    `3=${lock.poseThree}, V=${lock.poseV}`);
+  check('3: sospende solo dopo 500ms',
+    lock.lockedTooEarly === false && lock.lockedAfterHold === true && lock.badgeVisible,
+    `300ms=${lock.lockedTooEarly}, 600ms=${lock.lockedAfterHold}`);
+  check('sospeso: il pizzico non disegna', lock.strokesWhileLocked === 0);
+  check('sospeso: la gomma non cancella', lock.strokesAfterLockedEraser === 1);
+  check('sospeso: V e pugno restano inerti',
+    lock.toolAfterLockedV === 'eraser' && lock.strokesAfterLockedFist === 1,
+    `strumento=${lock.toolAfterLockedV}, tratti=${lock.strokesAfterLockedFist}`);
+  check('3 rifatto: riprende con lo strumento di prima',
+    lock.lockedAfterSecondThree === false && lock.toolAfterResume === 'eraser',
+    `strumento=${lock.toolAfterResume}`);
+  check('ripreso: il gesto torna a funzionare', lock.erasedAfterResume);
+  check('il pulsante strumento sblocca col mouse', lock.unlockedByButton);
 
   // L'anello di avanzamento della posa vive nell'overlay, che con la webcam
   // finta non vede mai una mano: lo si chiama a mano con risultati sintetici.

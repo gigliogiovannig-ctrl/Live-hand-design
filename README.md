@@ -24,6 +24,7 @@ Tutto gira nel browser: i frame della webcam non lasciano mai il dispositivo.
 | --- | --- |
 | Pizzico pollice + indice | Disegna (o cancella, con la gomma attiva) |
 | ✌️ Segno V (indice e medio alzati) | Alterna penna e gomma, dopo mezzo secondo di posa |
+| 🖐️ Segno del 3 (indice, medio, anulare) | Sospende penna e gomma; rifatto, riprende com'era |
 | ✊ Pugno chiuso per 1 secondo | Pulisce tutta la tela (annullabile con `Z`) |
 | Penna / Gomma | Cambia strumento; la gomma elimina i tratti che tocca |
 | Tavolozza e slider spessore | Colore e larghezza del tratto |
@@ -61,16 +62,23 @@ il tratto si spezzi:
 
 ### Pose a mano libera
 
-Oltre al pizzico l'app riconosce due pose, valutate solo quando non si sta disegnando:
+Oltre al pizzico l'app riconosce tre pose, valutate solo quando non si sta disegnando:
 
 - **Segno V** (indice e medio tesi, anulare e mignolo chiusi) tenuto **400 ms** alterna penna e gomma.
+- **Segno del 3** (indice, medio e anulare tesi, mignolo chiuso) tenuto **500 ms** sospende sia la
+  penna sia la gomma: la mano si muove davanti alla camera senza lasciare segni. Rifacendolo si
+  riprende **con lo strumento di prima**. A disegno sospeso nessun'altra posa ha effetto — nemmeno il
+  pugno — così in pausa niente può toccare la tela; l'unico modo per uscirne, oltre al 3, è scegliere
+  uno strumento col mouse. Lo stato è evidente: cornice e badge gialli sul riquadro, cursore grigio.
 - **Pugno chiuso** tenuto **1 secondo** pulisce la tela. Siccome è un gesto distruttivo, la pulizia
   si annulla con `Z` o col pulsante *Annulla*.
 
 Un dito è considerato teso confrontando quanto dista dal polso la sua punta rispetto alla nocca
-centrale: è un rapporto, quindi non dipende da quanto è lontana la mano né da come è ruotata. Mentre
-tieni la posa, un **anello si riempie** attorno al palmo (blu per il cambio strumento, rosso per la
-pulizia): finché non è completo puoi disfare il gesto e non succede nulla.
+centrale: è un rapporto, quindi non dipende da quanto è lontana la mano né da come è ruotata. V e 3
+differiscono solo per l'anulare, quindi il 3 viene provato per primo. Mentre tieni la posa, un
+**anello si riempie** attorno al palmo (blu per il cambio strumento, giallo per la pausa, rosso per
+la pulizia) con l'indicazione di cosa sta per succedere: finché non è completo puoi disfare il gesto
+e non succede nulla.
 
 Il pugno viene riconosciuto **prima** del pizzico, non dopo: chiudendo il pugno il pollice si ripiega
 sopra le dita e finisce vicino alla punta dell'indice, quindi la sola distanza pollice-indice lo

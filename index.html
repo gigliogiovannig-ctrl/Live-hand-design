@@ -13,6 +13,7 @@
       Unisci <strong>pollice e indice</strong> per disegnare, separali per staccare la penna.
       <span class="gestures">
         <span>✌️ segno V — cambia penna/gomma</span>
+        <span>🖐️ segno del 3 — sospendi/riprendi</span>
         <span>✊ pugno chiuso 1s — pulisci tutto</span>
       </span>
     </p>
@@ -23,6 +24,8 @@
       <video id="video" playsinline autoplay muted></video>
       <canvas id="drawing"></canvas>
       <canvas id="overlay"></canvas>
+
+      <div class="paused-badge" id="pausedBadge" hidden>✋ Disegno sospeso</div>
 
       <div class="status" id="status">
         <span class="dot" id="statusDot"></span>

@@ -110,6 +110,30 @@ html, body {
   transition: background 120ms ease;
 }
 
+.paused-badge {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(255, 214, 10, 0.16);
+  border: 1px solid #ffd60a;
+  color: #ffd60a;
+  font-size: 13px;
+  font-weight: 600;
+  backdrop-filter: blur(6px);
+}
+
+/* In pausa il riquadro si smorza: si vede a colpo d'occhio che non si disegna. */
+.viewport.paused::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 2px solid rgba(255, 214, 10, 0.55);
+  border-radius: var(--radius);
+  pointer-events: none;
+}
+
 .status .dot.ready { background: #30d158; }
 .status .dot.drawing { background: #ff2d55; box-shadow: 0 0 10px #ff2d55; }
 .status .dot.error { background: #ff453a; }

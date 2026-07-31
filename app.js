@@ -30,7 +30,7 @@ const FINGERS = [
 ];
 
 // Quanto va tenuta una posa prima che faccia effetto.
-const POSE_HOLD = { toggleTool: 400, clearAll: 1000 };
+const POSE_HOLD = { toggleTool: 400, toggleLock: 500, clearAll: 1000 };
 
 // Connessioni per disegnare lo scheletro della mano.
 const HAND_CONNECTIONS = [
@@ -66,6 +66,7 @@ const sensVal = document.getElementById("sensVal");
 const skeletonCheck = document.getElementById("showSkeleton");
 const mirrorCheck = document.getElementById("mirror");
 const toolButtons = document.querySelectorAll(".tool");
+const pausedBadge = document.getElementById("pausedBadge");
 const statusDot = document.getElementById("statusDot");
 const statusText = document.getElementById("statusText");
 
@@ -87,6 +88,7 @@ const state = {
   graceMs: 260,        // quanto si tiene vivo il tratto se la mano sparisce
   strokes: [],         // tratti completati + in corso, in coordinate normalizzate 0..1
   cleared: null,       // ultima tela cancellata, per poter annullare la pulizia
+  locked: false,       // disegno sospeso: la mano si muove senza lasciare segni
   hands: new Map(),    // stato per mano
 };
 
@@ -189,13 +191,19 @@ function isTightFist(landmarks) {
   return FINGERS.every((f) => handDist(landmarks[f.tip], palm) < size * 0.75);
 }
 
-/** Posa riconosciuta: segno V (cambia strumento) o pugno chiuso (pulisce). */
+/**
+ * Posa riconosciuta: segno V (cambia strumento), segno del 3 (sospende o
+ * riprende il disegno) o pugno chiuso (pulisce la tela).
+ */
 function detectPose(landmarks) {
   const reach = {};
   for (const f of FINGERS) reach[f.name] = fingerReach(landmarks, f);
+  const up = (name) => reach[name] > 1.15;
+  const down = (name) => reach[name] < 1.02;
 
-  const vSign = reach.index > 1.15 && reach.middle > 1.15 && reach.ring < 1.02 && reach.pinky < 1.02;
-  if (vSign) return "toggleTool";
+  // Il 3 va provato prima della V: differiscono solo per l'anulare.
+  if (up("index") && up("middle") && up("ring") && down("pinky")) return "toggleLock";
+  if (up("index") && up("middle") && down("ring") && down("pinky")) return "toggleTool";
   if (isTightFist(landmarks)) return "clearAll";
   return null;
 }
@@ -340,7 +348,7 @@ function drawOverlay(results) {
       ctx.arc(palm.x, palm.y, radius, 0, Math.PI * 2);
       ctx.stroke();
 
-      ctx.strokeStyle = clearing ? "#ff453a" : "#0a84ff";
+      ctx.strokeStyle = clearing ? "#ff453a" : hand.poseName === "toggleLock" ? "#ffd60a" : "#0a84ff";
       ctx.beginPath();
       ctx.arc(palm.x, palm.y, radius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * progress);
       ctx.stroke();
@@ -348,10 +356,12 @@ function drawOverlay(results) {
       ctx.fillStyle = "#fff";
       ctx.font = `${13 * s}px -apple-system, system-ui, sans-serif`;
       ctx.textAlign = "center";
-      ctx.fillText(
-        clearing ? "Pulisco tutto…" : state.tool === "pen" ? "→ Gomma" : "→ Penna",
-        palm.x, palm.y - radius - 10 * s
-      );
+      const labels = {
+        clearAll: "Pulisco tutto…",
+        toggleLock: state.locked ? "→ Riprendi" : "→ Sospendi",
+        toggleTool: state.tool === "pen" ? "→ Gomma" : "→ Penna",
+      };
+      ctx.fillText(labels[hand.poseName], palm.x, palm.y - radius - 10 * s);
       ctx.textAlign = "start";
     }
 
@@ -361,7 +371,8 @@ function drawOverlay(results) {
     const cx = (thumb.x + index.x) / 2;
     const cy = (thumb.y + index.y) / 2;
     const r = Math.max(state.width * s * 0.75, 10 * s);
-    const cursorColor = state.tool === "eraser" ? "#ffffff" : state.color;
+    const cursorColor = state.locked ? "#8e97a8"
+      : state.tool === "eraser" ? "#ffffff" : state.color;
 
     ctx.lineWidth = 2.5 * s;
     ctx.strokeStyle = cursorColor;
@@ -369,7 +380,7 @@ function drawOverlay(results) {
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.stroke();
 
-    if (pinching) {
+    if (pinching && !state.locked) {
       ctx.fillStyle = cursorColor + "88";
       ctx.fill();
     } else {
@@ -437,8 +448,10 @@ function processHand(key, landmarks, now = performance.now()) {
   }
   hand.pinching = pinching;
 
-  // Le pose valgono solo a mano libera: mentre si disegna non si cambia strumento.
-  updatePose(hand, pinching && pose !== "clearAll" ? null : pose, now);
+  // Mentre si disegna non si cambia strumento; e a disegno sospeso l'unica posa
+  // che conta è quella che lo riprende, così in pausa nulla tocca la tela.
+  const gated = pinching && pose === "toggleTool" ? null : pose;
+  updatePose(hand, state.locked && gated !== "toggleLock" ? null : gated, now);
 
   // Punto di disegno: a metà fra le punte di pollice e indice.
   const thumb = landmarkToCanvas(landmarks[THUMB_TIP]);
@@ -462,7 +475,8 @@ function processHand(key, landmarks, now = performance.now()) {
     };
   }
 
-  if (!pinching) {
+  // Disegno sospeso: la mano si muove liberamente senza lasciare segni.
+  if (!pinching || state.locked) {
     hand.stroke = null;
     return;
   }
@@ -507,7 +521,10 @@ function updatePose(hand, pose, now) {
   if (!pose || hand.poseFired || now - hand.poseSince < POSE_HOLD[pose]) return;
 
   hand.poseFired = true;
-  if (pose === "toggleTool") {
+  if (pose === "toggleLock") {
+    setLocked(!state.locked);
+    setStatus(state.locked ? "Segno del 3 — disegno sospeso" : "Segno del 3 — disegno ripreso", "ready");
+  } else if (pose === "toggleTool") {
     setTool(state.tool === "pen" ? "eraser" : "pen");
     setStatus(state.tool === "eraser" ? "Segno V — gomma" : "Segno V — penna", "ready");
   } else if (pose === "clearAll") {
@@ -561,12 +578,16 @@ function loop() {
         if (!seen.has(key)) expireLostHand(hand, ts);
       }
       const anyPinch = [...state.hands.values()].some((h) => h.pinching);
-      setStatus(
-        anyPinch
-          ? state.tool === "eraser" ? "Cancello…" : "Disegno…"
-          : `Mano rilevata (${results.landmarks.length}) — pizzica per disegnare`,
-        anyPinch ? "drawing" : "ready"
-      );
+      if (state.locked) {
+        setStatus("Disegno sospeso — rifai il 3 per riprendere", "ready");
+      } else {
+        setStatus(
+          anyPinch
+            ? state.tool === "eraser" ? "Cancello…" : "Disegno…"
+            : `Mano rilevata (${results.landmarks.length}) — pizzica per disegnare`,
+          anyPinch ? "drawing" : "ready"
+        );
+      }
     } else {
       for (const hand of state.hands.values()) expireLostHand(hand, ts);
       const holding = [...state.hands.values()].some((h) => h.pinching);
@@ -715,9 +736,20 @@ palette.addEventListener("click", (e) => {
   state.color = btn.dataset.color;
 });
 
+function setLocked(locked) {
+  state.locked = locked;
+  pausedBadge.hidden = !locked;
+  viewport.classList.toggle("paused", locked);
+  // Niente tratti in sospeso da riprendere quando si torna a disegnare.
+  for (const hand of state.hands.values()) hand.stroke = null;
+}
+
 function setTool(tool) {
   state.tool = tool;
   toolButtons.forEach((b) => b.classList.toggle("active", b.dataset.tool === tool));
+  // Scegliere uno strumento è anche il modo per uscire dalla pausa col mouse,
+  // se il gesto non venisse riconosciuto.
+  if (state.locked) setLocked(false);
   // Cambio strumento a metà gesto: chiudi i tratti aperti.
   for (const hand of state.hands.values()) hand.stroke = null;
 }
@@ -824,6 +856,7 @@ setStatus("Premi «Avvia camera»");
 if (new URLSearchParams(location.search).has("debug")) {
   window.__handDesign = {
     state, processHand, expireLostHand, renderStrokes, drawStrokeTail, pinchRatio, landmarkToCanvas,
-    detectPose, isTightFist, fingerReach, setTool, undo, clearAll, drawOverlay, FINGERS, POSE_HOLD,
+    detectPose, isTightFist, fingerReach, setTool, setLocked, undo, clearAll, drawOverlay,
+    FINGERS, POSE_HOLD,
   };
 }
